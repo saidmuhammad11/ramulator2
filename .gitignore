@@ -1,0 +1,6 @@
+build/
+ramulator2
+*.so
+*.trace
+*.gz
+ext/
