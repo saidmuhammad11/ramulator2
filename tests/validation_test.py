@@ -3,72 +3,127 @@ import subprocess
 import sys
 import re
 
-def main():
-    print("--- Starting Ramulator 2 Validation Test ---")
-    
-    # 1. Define your Golden Numbers (from your report)
-    EXPECTED_READS = 6
-    EXPECTED_ROW_HITS = 2
+ANSI_ESCAPE = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
 
-    # 2. Run the simulator
-    print("Running simulator with example_config.yaml...")
+TEST_CASES = [
+    {
+        "name": "Baseline DDR4 case",
+        "cmd": ["./ramulator2", "-f", "example_config.yaml"],
+        "cwd": "..",
+        "expected": {
+            "total_num_read_requests": 6,
+            "row_hits_0": 2,
+        },
+    },
+    {
+        "name": "BlockHammer DDR5 case",
+        "cmd": ["./ramulator2", "-f", "example_config_bh.yaml"],
+        "cwd": "..",
+        "expected": {
+            "total_num_read_requests": 7079,
+            "controller_num_row_conflicts": 6908,
+            "bliss_blacklist_count": 20975,
+        },
+    },
+    {
+        "name": "PRAC DDR5 case",
+        "cmd": ["./ramulator2", "-f", "example_config_prac.yaml"],
+        "cwd": "..",
+        "expected": {
+            "total_num_read_requests": 8495,
+            "controller_num_row_conflicts": 8393,
+            "prac_num_recovery": 21,
+        },
+    },
+]
+
+def run_case(case):
     try:
-        # Run from the parent directory
         result = subprocess.run(
-            ["./ramulator2", "-f", "example_config.yaml"],
-            cwd="..", 
-            capture_output=True, text=True, check=True
+            case["cmd"],
+            cwd=case["cwd"],
+            capture_output=True,
+            text=True,
+            check=True
         )
-        
-        # COMBINE stdout and stderr
         raw_output = result.stdout + "\n" + result.stderr
-        
-        # Strip invisible ANSI color codes
-        ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
-        clean_output = ansi_escape.sub('', raw_output)
+        clean_output = ANSI_ESCAPE.sub("", raw_output)
+        return clean_output
 
     except subprocess.CalledProcessError as e:
-        print(f"[FAIL] Simulator crashed! Error:\n{e.stderr}")
-        sys.exit(1)
+        print(f"[FAIL] {case['name']} crashed during execution.")
+        print(e.stderr)
+        return None
     except FileNotFoundError:
-        print("[FAIL] Could not find ./ramulator2 executable. Run this from the tests/ folder.")
-        sys.exit(1)
+        print(f"[FAIL] {case['name']} could not find the ramulator2 executable.")
+        return None
 
-    # 3. Extract the actual numbers using Regular Expressions (UPDATED WITH UNDERSCORES)
-    read_match = re.search(r'total_num_read_requests:\s*(\d+)', clean_output)
-    row_hits_match = re.search(r'row_hits_0:\s*(\d+)', clean_output)
+def parse_metrics(output, expected_metrics):
+    metrics = {}
 
-    if not read_match or not row_hits_match:
-        print("[FAIL] Could not parse the statistics from the output.")
-        print("\n--- DEBUG: Here is what Ramulator actually printed ---\n")
-        print(clean_output[-1000:]) 
-        sys.exit(1)
+    for metric_name in expected_metrics:
+        match = re.search(rf'{re.escape(metric_name)}:\s*(\d+)', output)
+        if match:
+            metrics[metric_name] = int(match.group(1))
 
-    actual_reads = int(read_match.group(1))
-    actual_row_hits = int(row_hits_match.group(1))
+    return metrics
 
-    # 4. Compare and Output Pass/Fail
+def validate_case(case):
+    print(f"\n=== Running test case: {case['name']} ===")
+    print(f"Command: {' '.join(case['cmd'])}")
+
+    output = run_case(case)
+    if output is None:
+        print(f"[CASE FAIL] {case['name']}")
+        return False
+
+    actual = parse_metrics(output, case["expected"])
+    expected = case["expected"]
+
     passed = True
-    print("\n--- Validation Results ---")
-    
-    if actual_reads == EXPECTED_READS:
-        print(f"[PASS] Read Requests match: {actual_reads}")
-    else:
-        print(f"[FAIL] Read Requests mismatch! Expected {EXPECTED_READS}, got {actual_reads}")
-        passed = False
 
-    if actual_row_hits == EXPECTED_ROW_HITS:
-        print(f"[PASS] Row Hits match: {actual_row_hits}")
-    else:
-        print(f"[FAIL] Row Hits mismatch! Expected {EXPECTED_ROW_HITS}, got {actual_row_hits}")
-        passed = False
+    for metric_name, expected_value in expected.items():
+        if metric_name not in actual:
+            print(f"[FAIL] Could not parse metric: {metric_name}")
+            passed = False
+            continue
 
-    # 5. Final Verdict
+        actual_value = actual[metric_name]
+        if actual_value == expected_value:
+            print(f"[PASS] {metric_name}: expected {expected_value}, got {actual_value}")
+        else:
+            print(f"[FAIL] {metric_name}: expected {expected_value}, got {actual_value}")
+            passed = False
+
     if passed:
-        print("\n[SUCCESS] Ramulator 2 is functioning correctly based on golden metrics.")
+        print(f"[CASE PASS] {case['name']}")
+    else:
+        print(f"[CASE FAIL] {case['name']}")
+
+    return passed
+
+def main():
+    print("--- Starting Ramulator 2 Validation Suite ---")
+
+    overall_pass = True
+    total_cases = len(TEST_CASES)
+    passed_cases = 0
+
+    for case in TEST_CASES:
+        case_pass = validate_case(case)
+        if case_pass:
+            passed_cases += 1
+        else:
+            overall_pass = False
+
+    print("\n=== Final Validation Summary ===")
+    print(f"Cases passed: {passed_cases}/{total_cases}")
+
+    if overall_pass:
+        print("[SUCCESS] All validation cases passed.")
         sys.exit(0)
     else:
-        print("\n[FAILURE] Ramulator 2 validation failed.")
+        print("[FAILURE] One or more validation cases failed.")
         sys.exit(1)
 
 if __name__ == "__main__":
